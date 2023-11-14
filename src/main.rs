@@ -1,3 +1,7 @@
+use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
 struct Account {
     owner_id: u32,
     balance: f64,
@@ -7,6 +11,7 @@ struct Exchange {
     fee_percentage: f64,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Order {
     is_buy: bool,
     price: u32,
@@ -48,19 +53,28 @@ impl<'a> OrderFiller for OrderProcessor<'a> {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order) {
         let total_cost = buy_order.price as f64 * buy_order.quantity as f64;
 
-        let buyer_index = self.accounts.iter().position(|acc| acc.owner_id == buy_order.owner_id)
-                           .expect("Buyer account not found");
-        let seller_index = self.accounts.iter().position(|acc| acc.owner_id == sell_order.owner_id)
-                            .expect("Seller account not found");
+        let buyer_index = self
+            .accounts
+            .iter()
+            .position(|acc| acc.owner_id == buy_order.owner_id)
+            .expect("Buyer account not found");
+        let seller_index = self
+            .accounts
+            .iter()
+            .position(|acc| acc.owner_id == sell_order.owner_id)
+            .expect("Seller account not found");
 
-        assert_ne!(buyer_index, seller_index, "Buyer and seller cannot be the same account");
+        assert_ne!(
+            buyer_index, seller_index,
+            "Buyer and seller cannot be the same account"
+        );
 
         {
             let buyer_account = &mut self.accounts[buyer_index];
             buyer_account.balance -= total_cost;
             println!("Buyer's new balance: {}", buyer_account.balance);
         }
-        
+
         {
             let seller_account = &mut self.accounts[seller_index];
             let fee = total_cost * self.exchange.fee_percentage / 100.0;
@@ -70,21 +84,50 @@ impl<'a> OrderFiller for OrderProcessor<'a> {
     }
 }
 
-fn main() {
-    let mut accounts = vec![
-        Account { owner_id: 1, balance: 1000.0 },
-        Account { owner_id: 2, balance: 500.0 },
-    ];
-    let exchange = Exchange { fee_percentage: 2.0 };
-    
-    let mut processor = OrderProcessor {exchange: &exchange, accounts: &mut accounts };
+impl fmt::Display for Order {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Order {{ is_buy: {}, price: {}, quantity: {}, priority: {}, owner_id: {} }}",
+            self.is_buy, self.price, self.quantity, self.priority, self.owner_id
+        )
+    }
+}
 
-    let buy_orders = vec![
-        Order { is_buy: true, price: 100, quantity: 5, priority: 1, owner_id: 1 },
+#[post("/orders")]
+async fn new_order(order: web::Json<Order>) -> impl Responder {
+    println!("Received order: {}", order);
+    HttpResponse::Ok().json(order.into_inner())
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let mut accounts = vec![
+        Account {
+            owner_id: 1,
+            balance: 1000.0,
+        },
+        Account {
+            owner_id: 2,
+            balance: 500.0,
+        },
     ];
-    let sell_orders = vec![
-        Order { is_buy: false, price: 100, quantity: 5, priority: 2, owner_id: 2 },
-    ];
-    
+    let exchange = Exchange {
+        fee_percentage: 2.0,
+    };
+
+    let mut processor = OrderProcessor {
+        exchange: &exchange,
+        accounts: &mut accounts,
+    };
+
+    let buy_orders = vec![];
+    let sell_orders = vec![];
+
     processor.match_orders(buy_orders, sell_orders);
+
+    HttpServer::new(|| App::new().service(new_order))
+        .bind("127.0.0.1:8080")?
+        .run()
+        .await
 }
