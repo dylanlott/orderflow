@@ -27,7 +27,7 @@ trait Matcher {
     fn match_orders(&mut self, buy_orders: Vec<Order>, sell_orders: Vec<Order>);
 }
 
-trait OrderFiller {
+trait Filler {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order);
 }
 
@@ -75,7 +75,7 @@ impl<'a> Matcher for OrderProcessor {
     }
 }
 
-impl OrderFiller for OrderProcessor {
+impl Filler for OrderProcessor {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order) {
         let total_cost = buy_order.price as f64 * buy_order.quantity as f64;
 
