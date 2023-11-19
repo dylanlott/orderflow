@@ -1,6 +1,6 @@
 use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
-use std::{fmt};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 struct Account {
@@ -10,9 +10,11 @@ struct Account {
 
 struct Exchange {
     fee_percentage: f64,
+    buy_orders: Arc<Mutex<Vec<Order>>>,
+    sell_orders: Arc<Mutex<Vec<Order>>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct Order {
     is_buy: bool,
     price: u32,
@@ -34,6 +36,29 @@ struct OrderProcessor {
     accounts: Arc<Mutex<Vec<Account>>>,
 }
 
+impl OrderProcessor {
+    fn add_order(&mut self, order: Order) -> Order {
+        let list = if order.is_buy {
+            &self.exchange.buy_orders
+        } else {
+            &self.exchange.sell_orders
+        };
+        let mut orders = list.lock().unwrap();
+        orders.push(order);
+        println!("added order {}", order);
+        return order;
+    }
+}
+
+impl Clone for OrderProcessor {
+    fn clone(&self) -> Self {
+        OrderProcessor {
+            exchange: self.exchange.clone(),
+            accounts: self.accounts.clone(),
+        }
+    }
+}
+
 impl<'a> OrderMatcher for OrderProcessor {
     fn match_orders(&mut self, mut buy_orders: Vec<Order>, mut sell_orders: Vec<Order>) {
         buy_orders.sort_by(|a, b| b.priority.cmp(&a.priority));
@@ -50,17 +75,11 @@ impl<'a> OrderMatcher for OrderProcessor {
     }
 }
 
-impl Clone for OrderProcessor {
-    fn clone(&self) -> Self {
-        OrderProcessor { exchange: self.exchange.clone(), accounts: self.accounts.clone() }
-    }
-}
-
 impl OrderFiller for OrderProcessor {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order) {
         let total_cost = buy_order.price as f64 * buy_order.quantity as f64;
 
-        let mut accounts = self.accounts.lock().unwrap(); 
+        let mut accounts = self.accounts.lock().unwrap();
 
         let buyer_index = accounts
             .iter()
@@ -75,7 +94,6 @@ impl OrderFiller for OrderProcessor {
             buyer_index, seller_index,
             "Buyer and seller cannot be the same account"
         );
-
 
         let buyer_account = &mut accounts[buyer_index];
         buyer_account.balance -= total_cost;
@@ -99,9 +117,15 @@ impl fmt::Display for Order {
 }
 
 #[post("/orders")]
-async fn new_order(order: web::Json<Order>) -> impl Responder {
+async fn new_order(
+    order: web::Json<Order>,
+    processor: web::Data<Arc<Mutex<OrderProcessor>>>,
+) -> impl Responder {
     println!("Received order: {}", order);
-    HttpResponse::Ok().json(order.into_inner())
+    let mut proc = processor.lock().unwrap();
+    let o = proc.add_order(order.into_inner());
+    print!("Order added: {}", o);
+    HttpResponse::Ok().json(o)
 }
 
 #[actix_web::main]
@@ -118,22 +142,21 @@ async fn main() -> std::io::Result<()> {
     ];
     let exchange = Exchange {
         fee_percentage: 2.0,
+        buy_orders: Arc::new(Mutex::new(Vec::new())),
+        sell_orders: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let mut processor = OrderProcessor {
-        accounts: Arc::new(Mutex::new(accounts)), 
-        exchange: Arc::new(exchange)
+    let processor = OrderProcessor {
+        accounts: Arc::new(Mutex::new(accounts)),
+        exchange: Arc::new(exchange),
     };
 
-    let buy_orders = vec![];
-    let sell_orders = vec![];
-
-    processor.match_orders(buy_orders, sell_orders);
-
-    HttpServer::new(move || App::new()
-    .app_data(web::Data::new(processor.clone()))
-        .service(new_order))
-        .bind("127.0.0.1:8080")?
-        .run()
-        .await
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(Arc::new(Mutex::new(processor.clone()))))
+            .service(new_order)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
