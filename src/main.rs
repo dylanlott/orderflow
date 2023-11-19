@@ -121,10 +121,8 @@ async fn new_order(
     order: web::Json<Order>,
     processor: web::Data<Arc<Mutex<OrderProcessor>>>,
 ) -> impl Responder {
-    println!("Received order: {}", order);
     let mut proc = processor.lock().unwrap();
     let o = proc.add_order(order.into_inner());
-    print!("Order added: {}", o);
     HttpResponse::Ok().json(o)
 }
 
