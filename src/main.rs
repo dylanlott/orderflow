@@ -23,7 +23,7 @@ struct Order {
     owner_id: u32,
 }
 
-trait OrderMatcher {
+trait Matcher {
     fn match_orders(&mut self, buy_orders: Vec<Order>, sell_orders: Vec<Order>);
 }
 
@@ -59,7 +59,7 @@ impl Clone for OrderProcessor {
     }
 }
 
-impl<'a> OrderMatcher for OrderProcessor {
+impl<'a> Matcher for OrderProcessor {
     fn match_orders(&mut self, mut buy_orders: Vec<Order>, mut sell_orders: Vec<Order>) {
         buy_orders.sort_by(|a, b| b.priority.cmp(&a.priority));
         sell_orders.sort_by(|a, b| b.priority.cmp(&a.priority));
