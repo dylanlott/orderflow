@@ -2,6 +2,10 @@ use actix_web::{post, get, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use tokio::spawn;
+use tokio::time::{sleep, Duration};
+
+
 
 struct Account {
     owner_id: u32,
@@ -135,26 +139,32 @@ async fn get_orders(
         buy_orders: Vec<Order>,
         sell_orders: Vec<Order>,
     }
-
-    let proc = processor.lock() .unwrap();
     
+    let proc = processor.lock() .unwrap();
     let buy_orders = proc.exchange.buy_orders.lock().unwrap().clone();
     let sell_orders = proc.exchange.sell_orders.lock().unwrap().clone();
-    for element in buy_orders {
-        println!("buy: {}", element)
-    }
-    for element in sell_orders {
-        println!("sell: {}", element)
-    }
-
-    let buy_orders = proc.exchange.buy_orders.lock().unwrap().clone();
-    let sell_orders = proc.exchange.sell_orders.lock().unwrap().clone();
+    
     let response = OrdersResponse {
         buy_orders,
         sell_orders
     };
 
     return HttpResponse::Ok().json(response);
+}
+
+async fn run_matcher(processor: Arc<Mutex<OrderProcessor>>) {
+    loop {
+        println!("running matcher with fee {}", processor.lock().unwrap().exchange.fee_percentage);
+        {
+            let mut proc = processor.lock().unwrap();
+            let buys = proc.exchange.buy_orders.lock().unwrap().clone();
+            let sells = proc.exchange.sell_orders.lock().unwrap().clone();
+            proc.match_orders(buys, sells)
+        }
+
+        // Sleep for a short duration to yield control
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
 }
 
 #[actix_web::main]
@@ -169,6 +179,7 @@ async fn main() -> std::io::Result<()> {
             balance: 500.0,
         },
     ];
+    
     let exchange = Exchange {
         fee_percentage: 2.0,
         buy_orders: Arc::new(Mutex::new(Vec::new())),
@@ -179,6 +190,8 @@ async fn main() -> std::io::Result<()> {
         accounts: Arc::new(Mutex::new(accounts)),
         exchange: Arc::new(exchange),
     };
+
+    tokio::spawn(run_matcher(Arc::new(Mutex::new(processor.clone()))));
 
     HttpServer::new(move || {
         App::new()
