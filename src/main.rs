@@ -1,4 +1,4 @@
-use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{post, get, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -126,6 +126,37 @@ async fn new_order(
     HttpResponse::Ok().json(o)
 }
 
+#[get("/orders")]
+async fn get_orders(
+    processor: web::Data<Arc<Mutex<OrderProcessor>>>,
+) -> impl Responder {
+    #[derive(Serialize)]
+    struct OrdersResponse {
+        buy_orders: Vec<Order>,
+        sell_orders: Vec<Order>,
+    }
+
+    let proc = processor.lock() .unwrap();
+    
+    let buy_orders = proc.exchange.buy_orders.lock().unwrap().clone();
+    let sell_orders = proc.exchange.sell_orders.lock().unwrap().clone();
+    for element in buy_orders {
+        println!("buy: {}", element)
+    }
+    for element in sell_orders {
+        println!("sell: {}", element)
+    }
+
+    let buy_orders = proc.exchange.buy_orders.lock().unwrap().clone();
+    let sell_orders = proc.exchange.sell_orders.lock().unwrap().clone();
+    let response = OrdersResponse {
+        buy_orders,
+        sell_orders
+    };
+
+    return HttpResponse::Ok().json(response);
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let accounts = vec![
@@ -153,6 +184,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(Arc::new(Mutex::new(processor.clone()))))
             .service(new_order)
+            .service(get_orders)
     })
     .bind("127.0.0.1:8080")?
     .run()
