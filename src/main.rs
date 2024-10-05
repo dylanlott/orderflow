@@ -1,3 +1,8 @@
+use actix_web::{post, get, web, App, HttpResponse, HttpServer, Responder};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::sync::{Arc, Mutex};
+
 struct Account {
     owner_id: u32,
     balance: f64,
@@ -5,8 +10,11 @@ struct Account {
 
 struct Exchange {
     fee_percentage: f64,
+    buy_orders: Arc<Mutex<Vec<Order>>>,
+    sell_orders: Arc<Mutex<Vec<Order>>>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct Order {
     is_buy: bool,
     price: u32,
@@ -15,20 +23,43 @@ struct Order {
     owner_id: u32,
 }
 
-trait OrderMatcher {
+trait Matcher {
     fn match_orders(&mut self, buy_orders: Vec<Order>, sell_orders: Vec<Order>);
 }
 
-trait OrderFiller {
+trait Filler {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order);
 }
 
-struct OrderProcessor<'a> {
-    exchange: &'a Exchange,
-    accounts: &'a mut Vec<Account>,
+struct OrderProcessor {
+    exchange: Arc<Exchange>,
+    accounts: Arc<Mutex<Vec<Account>>>,
 }
 
-impl<'a> OrderMatcher for OrderProcessor<'a> {
+impl OrderProcessor {
+    fn add_order(&mut self, order: Order) -> Order {
+        let list = if order.is_buy {
+            &self.exchange.buy_orders
+        } else {
+            &self.exchange.sell_orders
+        };
+        let mut orders = list.lock().unwrap();
+        orders.push(order);
+        println!("added order {}", order);
+        return order;
+    }
+}
+
+impl Clone for OrderProcessor {
+    fn clone(&self) -> Self {
+        OrderProcessor {
+            exchange: self.exchange.clone(),
+            accounts: self.accounts.clone(),
+        }
+    }
+}
+
+impl<'a> Matcher for OrderProcessor {
     fn match_orders(&mut self, mut buy_orders: Vec<Order>, mut sell_orders: Vec<Order>) {
         buy_orders.sort_by(|a, b| b.priority.cmp(&a.priority));
         sell_orders.sort_by(|a, b| b.priority.cmp(&a.priority));
@@ -44,47 +75,127 @@ impl<'a> OrderMatcher for OrderProcessor<'a> {
     }
 }
 
-impl<'a> OrderFiller for OrderProcessor<'a> {
+impl Filler for OrderProcessor {
     fn fill_order(&mut self, buy_order: &Order, sell_order: &Order) {
         let total_cost = buy_order.price as f64 * buy_order.quantity as f64;
 
-        let buyer_index = self.accounts.iter().position(|acc| acc.owner_id == buy_order.owner_id)
-                           .expect("Buyer account not found");
-        let seller_index = self.accounts.iter().position(|acc| acc.owner_id == sell_order.owner_id)
-                            .expect("Seller account not found");
+        let mut accounts = self.accounts.lock().unwrap();
 
-        assert_ne!(buyer_index, seller_index, "Buyer and seller cannot be the same account");
+        let buyer_index = accounts
+            .iter()
+            .position(|acc| acc.owner_id == buy_order.owner_id)
+            .expect("Buyer account not found");
+        let seller_index = accounts
+            .iter()
+            .position(|acc| acc.owner_id == sell_order.owner_id)
+            .expect("Seller account not found");
 
-        {
-            let buyer_account = &mut self.accounts[buyer_index];
-            buyer_account.balance -= total_cost;
-            println!("Buyer's new balance: {}", buyer_account.balance);
-        }
-        
-        {
-            let seller_account = &mut self.accounts[seller_index];
-            let fee = total_cost * self.exchange.fee_percentage / 100.0;
-            seller_account.balance += total_cost - fee;
-            println!("Seller's new balance: {}", seller_account.balance);
-        }
+        assert_ne!(
+            buyer_index, seller_index,
+            "Buyer and seller cannot be the same account"
+        );
+
+        let buyer_account = &mut accounts[buyer_index];
+        buyer_account.balance -= total_cost;
+        println!("Buyer's new balance: {}", buyer_account.balance);
+
+        let seller_account = &mut accounts[seller_index];
+        let fee = total_cost * self.exchange.fee_percentage / 100.0;
+        seller_account.balance += total_cost - fee;
+        println!("Seller's new balance: {}", seller_account.balance);
     }
 }
 
-fn main() {
-    let mut accounts = vec![
-        Account { owner_id: 1, balance: 1000.0 },
-        Account { owner_id: 2, balance: 500.0 },
-    ];
-    let exchange = Exchange { fee_percentage: 2.0 };
-    
-    let mut processor = OrderProcessor {exchange: &exchange, accounts: &mut accounts };
+impl fmt::Display for Order {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Order {{ is_buy: {}, price: {}, quantity: {}, priority: {}, owner_id: {} }}",
+            self.is_buy, self.price, self.quantity, self.priority, self.owner_id
+        )
+    }
+}
 
-    let buy_orders = vec![
-        Order { is_buy: true, price: 100, quantity: 5, priority: 1, owner_id: 1 },
-    ];
-    let sell_orders = vec![
-        Order { is_buy: false, price: 100, quantity: 5, priority: 2, owner_id: 2 },
+#[post("/orders")]
+async fn new_order(
+    order: web::Json<Order>,
+    processor: web::Data<Arc<Mutex<OrderProcessor>>>,
+) -> impl Responder {
+    let mut proc = processor.lock().unwrap();
+    let o = proc.add_order(order.into_inner());
+    HttpResponse::Ok().json(o)
+}
+
+#[get("/orders")]
+async fn get_orders(
+    processor: web::Data<Arc<Mutex<OrderProcessor>>>,
+) -> impl Responder {
+    #[derive(Serialize)]
+    struct OrdersResponse {
+        buy_orders: Vec<Order>,
+        sell_orders: Vec<Order>,
+    }
+    
+    let proc = processor.lock() .unwrap();
+    let buy_orders = proc.exchange.buy_orders.lock().unwrap().clone();
+    let sell_orders = proc.exchange.sell_orders.lock().unwrap().clone();
+    
+    let response = OrdersResponse {
+        buy_orders,
+        sell_orders
+    };
+
+    return HttpResponse::Ok().json(response);
+}
+
+async fn run_matcher(processor: Arc<Mutex<OrderProcessor>>) {
+    loop {
+        println!("running matcher with fee {}", processor.lock().unwrap().exchange.fee_percentage);
+        {
+            let mut proc = processor.lock().unwrap();
+            let buys = proc.exchange.buy_orders.lock().unwrap().clone();
+            let sells = proc.exchange.sell_orders.lock().unwrap().clone();
+            proc.match_orders(buys, sells)
+        }
+
+        // Sleep for a short duration to yield control
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let accounts = vec![
+        Account {
+            owner_id: 1,
+            balance: 1000.0,
+        },
+        Account {
+            owner_id: 2,
+            balance: 500.0,
+        },
     ];
     
-    processor.match_orders(buy_orders, sell_orders);
+    let exchange = Exchange {
+        fee_percentage: 2.0,
+        buy_orders: Arc::new(Mutex::new(Vec::new())),
+        sell_orders: Arc::new(Mutex::new(Vec::new())),
+    };
+
+    let processor = OrderProcessor {
+        accounts: Arc::new(Mutex::new(accounts)),
+        exchange: Arc::new(exchange),
+    };
+
+    tokio::spawn(run_matcher(Arc::new(Mutex::new(processor.clone()))));
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(Arc::new(Mutex::new(processor.clone()))))
+            .service(new_order)
+            .service(get_orders)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
