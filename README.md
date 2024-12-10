@@ -19,6 +19,7 @@
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
 - [Usage](#usage)
+- [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
   - [Creating A Pull Request](#creating-a-pull-request)
@@ -64,6 +65,22 @@ cargo build
 ## Usage
 
 Don't use this in production, please. For experimentation only.
+
+## Testing
+
+To test the API, `cargo run` and then, in another terminal, fire off these curl commands to test post and get requests of the server.
+
+- Create an order `POST /orders`
+
+```sh
+curl -X POST http://127.0.0.1:8080/orders -H "Content-Type: application/json" -d '{"is_buy": true, "price": 100, "quantity": 10, "priority": 1, "owner_id": 123}'
+```
+
+- GET a list of the open orders `GET /orders`
+
+```sh
+# TODO
+```
 
 ## Roadmap
 
